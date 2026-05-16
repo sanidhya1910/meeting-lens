@@ -1,0 +1,50 @@
+{
+  "name": "Interview Evaluation Note",
+  "description": "Template for recording candidate information, interview responses, and structured evaluation for hiring decisions.",
+  "sections": [
+    {
+      - "title": "Interview Metadata",
+      "instruction": "Date, Time, Candidate Name, Position Applied For, Interviewer(s) Name",
+      "format": "string"
+    },
+    {
+      "title": "Candidate Profile",
+      "instruction": "Brief summary of candidate's background and current status (e.g., notice period, salary expectations)",
+      "format": "paragraph"
+    },
+    {
+      "title": "Competency Assessment",
+      "instruction": "Evaluation of technical skills, soft skills, and role-specific competencies.",
+      "format": "list",
+      "item_format": "| **Competency** | **Rating (1-5)** | **Notes/Evidence** |\n| --- | --- | --- |"
+    },
+    {
+      "title": "Key Responses & Observations",
+      "instruction": "Detailed notes on specific questions asked and the candidate's responses.",
+      "format": "list",
+      "item_format": "| **Question/Topic** | **Candidate Response Summary** | **Observation |\n| --- | --- | --- |"
+    },
+    {
+      "title": "Culture Fit & Values",
+      "instruction": "Assessment of how the candidate aligns with company values and team dynamics.",
+      "format": "paragraph"
+    },
+    {
+      "title": "Strengths & Weaknesses",
+      "instruction": "Summary of key strengths and potential areas of concern/risks.",
+      "format": "list",
+      "item_format": "| **Type** | **Details** |\n| --- | --- |"
+    },
+    {
+      "title": "Final Recommendation",
+      "instruction": "Decision: Hire, No Hire, or Hold. Include rationale for the decision.",
+      "format": "paragraph"
+    },
+    {
+      "title": "Next Steps / Action Items",
+      "instruction": "Follow-up tasks (e.g., background check, second round scheduling, reference checks)",
+      "format": "list",
+      "item_format": "| **Task** | **Owner** | **Due Date |\n| --- | --- | --- |"
+    }
+  ]
+}
