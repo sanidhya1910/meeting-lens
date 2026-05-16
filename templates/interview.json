@@ -3,7 +3,7 @@
   "description": "Template for recording candidate information, interview responses, and structured evaluation for hiring decisions.",
   "sections": [
     {
-      - "title": "Interview Metadata",
+      "title": "Interview Metadata",
       "instruction": "Date, Time, Candidate Name, Position Applied For, Interviewer(s) Name",
       "format": "string"
     },

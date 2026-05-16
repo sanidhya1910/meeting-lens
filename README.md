@@ -1,4 +1,4 @@
-# Meeting Lens Pipeline
+# Meeting Lens
 
 A complete full-stack application for processing video files, extracting audio, transcribing with state-of-the-art ASR models (Whisper), and summarizing transcripts using any LLM (ChatGPT, Claude, LM Studio, etc.) based on a dynamic JSON template.
 
@@ -11,7 +11,9 @@ A complete full-stack application for processing video files, extracting audio, 
 ## Requirements
 - Python 3.9+
 - Node.js 18+
-- [FFmpeg](https://ffmpeg.org/download.html) installed and added to your system PATH.
+- [FFmpeg](https://ffmpeg.org/download.html)
+- [NVIDIA GPU](https://developer.nvidia.com/cuda-downloads)
+- [CUDA toolkit and cuDNN](https://developer.nvidia.com/cuda-downloads)
 
 ## Setup Instructions
 
