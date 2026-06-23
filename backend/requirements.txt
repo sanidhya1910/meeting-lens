@@ -1,3 +1,4 @@
+# Core (CPU-only, runs on any machine — no GPU required)
 fastapi
 uvicorn
 python-multipart
@@ -6,5 +7,8 @@ openai
 anthropic
 pydantic
 json-repair
-nvidia-cublas-cu12
-nvidia-cudnn-cu12
+
+# GPU acceleration is optional. For an NVIDIA GPU, additionally install:
+#   pip install -r requirements-gpu.txt
+# (and have the CUDA toolkit + cuDNN available). Without it, transcription
+# automatically falls back to CPU.

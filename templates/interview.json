@@ -1,50 +1,67 @@
 {
-  "name": "Interview Evaluation Note",
-  "description": "Template for recording candidate information, interview responses, and structured evaluation for hiring decisions.",
+  "name": "Interview Evaluation Report",
+  "description": "Comprehensive interview evaluation template covering candidate profile, competency scoring, question analysis, and hiring recommendation.",
   "sections": [
     {
       "title": "Interview Metadata",
-      "instruction": "Date, Time, Candidate Name, Position Applied For, Interviewer(s) Name",
-      "format": "string"
+      "instruction": "Extract or infer: Date, Time, Candidate Name, Position Applied For, Interviewer Name, Interview Duration, Interview Type (Technical/HR/Behavioral)",
+      "format": "list",
+      "item_format": "| **Field** | **Value** |\n| --- | --- |"
     },
     {
       "title": "Candidate Profile",
-      "instruction": "Brief summary of candidate's background and current status (e.g., notice period, salary expectations)",
+      "instruction": "Brief summary of candidate's educational background, current role/status, years of experience, location, and key skills mentioned",
       "format": "paragraph"
     },
     {
       "title": "Competency Assessment",
-      "instruction": "Evaluation of technical skills, soft skills, and role-specific competencies.",
+      "instruction": "Rate each relevant competency on a scale of 1-5 with evidence from the transcript. Include at least 5 competencies covering technical skills, problem solving, communication, domain knowledge, and leadership/teamwork",
       "format": "list",
-      "item_format": "| **Competency** | **Rating (1-5)** | **Notes/Evidence** |\n| --- | --- | --- |"
+      "item_format": "| **Competency** | **Rating (1-5)** | **Notes / Evidence** |\n| --- | --- | --- |"
     },
     {
-      "title": "Key Responses & Observations",
-      "instruction": "Detailed notes on specific questions asked and the candidate's responses.",
+      "title": "Key Questions & Responses",
+      "instruction": "List each major question asked during the interview, summarize the candidate's response, and provide an assessment of how well they answered",
       "format": "list",
-      "item_format": "| **Question/Topic** | **Candidate Response Summary** | **Observation |\n| --- | --- | --- |"
+      "item_format": "| **Question** | **Candidate Response** | **Assessment** |\n| --- | --- | --- |"
     },
     {
-      "title": "Culture Fit & Values",
-      "instruction": "Assessment of how the candidate aligns with company values and team dynamics.",
+      "title": "Technical Depth Analysis",
+      "instruction": "Evaluate the candidate's depth of technical knowledge. Mention specific technologies, frameworks, concepts they discussed and how well they explained them",
+      "format": "paragraph"
+    },
+    {
+      "title": "Projects & Experience Discussed",
+      "instruction": "List each project or experience the candidate discussed, including their role, technologies used, challenges faced, and outcome",
+      "format": "list",
+      "item_format": "| **Project** | **Role** | **Technologies** | **Key Outcome** |\n| --- | --- | --- | --- |"
+    },
+    {
+      "title": "Communication & Soft Skills",
+      "instruction": "Evaluate the candidate's communication clarity, confidence level, ability to articulate complex ideas, and interpersonal demeanor during the interview",
       "format": "paragraph"
     },
     {
       "title": "Strengths & Weaknesses",
-      "instruction": "Summary of key strengths and potential areas of concern/risks.",
+      "instruction": "List key strengths and areas of concern observed during the interview",
       "format": "list",
-      "item_format": "| **Type** | **Details** |\n| --- | --- |"
+      "item_format": "| **Type** | **Detail** | **Impact** |\n| --- | --- | --- |"
     },
     {
-      "title": "Final Recommendation",
-      "instruction": "Decision: Hire, No Hire, or Hold. Include rationale for the decision.",
+      "title": "Culture Fit & Motivation",
+      "instruction": "Assess how well the candidate aligns with team culture, their motivation for the role, career goals, and enthusiasm level",
       "format": "paragraph"
     },
     {
-      "title": "Next Steps / Action Items",
-      "instruction": "Follow-up tasks (e.g., background check, second round scheduling, reference checks)",
+      "title": "Final Recommendation",
+      "instruction": "Provide a clear Hire / No Hire / Hold decision with a detailed rationale based on the evidence gathered during the interview",
+      "format": "paragraph"
+    },
+    {
+      "title": "Next Steps & Action Items",
+      "instruction": "List follow-up actions required such as second round scheduling, reference checks, technical assessments, or offer preparation",
       "format": "list",
-      "item_format": "| **Task** | **Owner** | **Due Date |\n| --- | --- | --- |"
+      "item_format": "| **Action Item** | **Owner** | **Priority** | **Due Date** |\n| --- | --- | --- | --- |"
     }
   ]
 }

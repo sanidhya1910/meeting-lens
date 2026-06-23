@@ -1,0 +1,6 @@
+# Optional NVIDIA GPU acceleration for faster-whisper (ctranslate2).
+# Install on top of requirements.txt:  pip install -r requirements-gpu.txt
+# Requires a CUDA 12 capable GPU. The app auto-detects CUDA and falls back to
+# CPU when these aren't present, so this file is never required to run.
+nvidia-cublas-cu12
+nvidia-cudnn-cu12
