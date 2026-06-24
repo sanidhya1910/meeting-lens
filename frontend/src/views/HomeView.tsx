@@ -1,4 +1,4 @@
-import { UploadCloud, Mic, Layers, Sparkles, FileJson, Cpu, Zap, CheckCircle2, FileText, ListChecks } from 'lucide-react';
+import { UploadCloud, Mic, Layers, Sparkles, FileJson, Cpu, Zap, CheckCircle2, FileText, ListChecks, Library } from 'lucide-react';
 import type { Meeting, SystemInfo } from '../types';
 
 type Props = {
@@ -7,6 +7,7 @@ type Props = {
   onBulkSummarizeClick: () => void;
   onTemplateClick: () => void;
   onRecordClick: () => void;
+  onLibraryChatClick: () => void;
   meetings: Meeting[];
   systemInfo: SystemInfo;
 };
@@ -17,12 +18,24 @@ export function HomeView({
   onBulkSummarizeClick,
   onTemplateClick,
   onRecordClick,
+  onLibraryChatClick,
   meetings,
   systemInfo,
 }: Props) {
   const hasMeetings = meetings.length > 0;
   const summarized = meetings.filter(m => m.summary).length;
   const awaiting = meetings.length - summarized;
+
+  // Meetings per week over the last 8 weeks.
+  const WEEKS = 8;
+  const weekMs = 7 * 24 * 60 * 60 * 1000;
+  const now = Date.now();
+  const buckets = Array.from({ length: WEEKS }, () => 0);
+  for (const m of meetings) {
+    const diff = Math.floor((now - new Date(m.date).getTime()) / weekMs);
+    if (diff >= 0 && diff < WEEKS) buckets[WEEKS - 1 - diff]++;
+  }
+  const maxBucket = Math.max(1, ...buckets);
 
   return (
     <>
@@ -61,6 +74,20 @@ export function HomeView({
           <div className="stat-label">Awaiting summary</div>
         </div>
       </div>
+
+      {hasMeetings && (
+        <div className="activity-card">
+          <div className="activity-title">Activity — last 8 weeks</div>
+          <div className="activity-chart">
+            {buckets.map((count, i) => (
+              <div key={i} className="activity-col" title={`${count} meeting(s)`}>
+                <div className="activity-bar" style={{ height: `${(count / maxBucket) * 100}%` }} />
+                <span className="activity-count">{count || ''}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="features-grid">
         <div className="feature-card" onClick={onRecordClick}>
@@ -125,6 +152,22 @@ export function HomeView({
             <p>Describe what to extract from a meeting and let the AI build a JSON template.</p>
           </div>
           <button className="btn btn-outline" style={{ marginTop: 'auto' }}>Build Template</button>
+        </div>
+
+        <div
+          className={`feature-card ${!hasMeetings ? 'feature-card-muted' : ''}`}
+          onClick={hasMeetings ? onLibraryChatClick : undefined}
+        >
+          <div className="feature-icon" style={{ background: 'rgba(6, 182, 212, 0.12)', color: '#06b6d4' }}>
+            <Library size={24} />
+          </div>
+          <div>
+            <h3>Ask Your Library</h3>
+            <p>Chat across every meeting at once — answers cite the meetings they came from.</p>
+          </div>
+          <button className="btn btn-outline" style={{ marginTop: 'auto' }} disabled={!hasMeetings}>
+            Ask a Question
+          </button>
         </div>
       </div>
     </>

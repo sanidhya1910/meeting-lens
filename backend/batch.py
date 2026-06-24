@@ -7,7 +7,14 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from meetings import insert_meeting
-from pipeline import DATA_DIR, extract_audio, transcribe_audio_with_cache, WhisperModelCache
+from pipeline import (
+    DATA_DIR,
+    extract_audio,
+    transcribe_audio_with_cache,
+    WhisperModelCache,
+    save_playback_audio,
+    format_segment_line,
+)
 from storage import JsonStore
 
 _store = JsonStore("batches.json", default=[])
@@ -99,7 +106,7 @@ def recover_stale_jobs() -> int:
     return recovered
 
 
-def create_batch(filenames: list[str], asr_model: str, device: str) -> dict[str, Any]:
+def create_batch(filenames: list[str], asr_model: str, device: str, diarize: bool = False, translate: bool = False) -> dict[str, Any]:
     batch_id = str(uuid.uuid4())
     batch_dir = os.path.join(DATA_DIR, f"{BATCH_DIR_PREFIX}{batch_id}")
     os.makedirs(batch_dir, exist_ok=True)
@@ -121,6 +128,8 @@ def create_batch(filenames: list[str], asr_model: str, device: str) -> dict[str,
         "status": "queued",
         "asr_model": asr_model,
         "device": device,
+        "diarize": diarize,
+        "translate": translate,
         "batch_dir": batch_dir,
         "items": items,
         "completed_count": 0,
@@ -209,7 +218,7 @@ async def _process_batch(batch_id: str) -> None:
                 def on_segment(data: dict) -> None:
                     nonlocal last_progress_save
                     transcript_lines.append(
-                        f"[{data['start']:.2f}s -> {data['end']:.2f}s] {data['text']}"
+                        format_segment_line(data["start"], data["end"], data["text"], data.get("speaker"))
                     )
                     item["progress"] = f"[{data['start']:.2f}s] {data['text'][:80]}"
                     # Throttle disk writes — updating JSON on every segment blocks transcription
@@ -218,6 +227,14 @@ async def _process_batch(batch_id: str) -> None:
                         last_progress_save = now
                         _update_batch(batch)
 
+                speaker_turns = None
+                if batch.get("diarize"):
+                    import diarization
+                    if diarization.diarization_available():
+                        item["progress"] = "Detecting speakers..."
+                        _update_batch(batch)
+                        speaker_turns = await asyncio.to_thread(diarization.diarize, audio_path)
+
                 await asyncio.to_thread(
                     transcribe_audio_with_cache,
                     audio_path,
@@ -225,6 +242,8 @@ async def _process_batch(batch_id: str) -> None:
                     batch["device"],
                     cache,
                     on_segment,
+                    speaker_turns,
+                    batch.get("translate", False),
                 )
 
                 item["progress"] = "Saving meeting..."
@@ -248,6 +267,7 @@ async def _process_batch(batch_id: str) -> None:
 
                 try:
                     if os.path.exists(audio_path):
+                        save_playback_audio(audio_path, meeting_id)
                         os.remove(audio_path)
                     if os.path.exists(video_path):
                         os.remove(video_path)

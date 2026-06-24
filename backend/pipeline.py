@@ -3,6 +3,7 @@ import subprocess
 import site
 import sys
 import json
+import shutil
 import threading
 import urllib.request
 import urllib.error
@@ -31,10 +32,44 @@ from anthropic import Anthropic
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MODELS_DIR = os.path.join(BASE_DIR, "models")
 DATA_DIR = os.path.join(BASE_DIR, "data")
+AUDIO_DIR = os.path.join(DATA_DIR, "audio")
 TEMPLATES_DIR = os.path.join(BASE_DIR, "templates")
 os.makedirs(MODELS_DIR, exist_ok=True)
 os.makedirs(DATA_DIR, exist_ok=True)
+os.makedirs(AUDIO_DIR, exist_ok=True)
 os.makedirs(TEMPLATES_DIR, exist_ok=True)
+
+
+def playback_audio_path(meeting_id: str) -> str:
+    return os.path.join(AUDIO_DIR, f"{meeting_id}.mp3")
+
+
+def has_playback_audio(meeting_id: str) -> bool:
+    return os.path.exists(playback_audio_path(meeting_id))
+
+
+def save_playback_audio(src_audio_path: str, meeting_id: str) -> bool:
+    """Transcode the source audio to a compact mp3 we keep for in-app playback."""
+    try:
+        dest = playback_audio_path(meeting_id)
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", src_audio_path, "-vn", "-ac", "1",
+             "-c:a", "libmp3lame", "-q:a", "5", dest],
+            check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        return True
+    except Exception as e:
+        print(f"[WARN] Could not save playback audio for {meeting_id}: {e}")
+        return False
+
+
+def delete_playback_audio(meeting_id: str) -> None:
+    try:
+        path = playback_audio_path(meeting_id)
+        if os.path.exists(path):
+            os.remove(path)
+    except OSError:
+        pass
 
 def extract_audio(video_path: str, audio_path: str):
     command = [
@@ -84,6 +119,14 @@ def _compute_type_for(device: str) -> str:
 
 
 OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
+# Keep the model resident in Ollama between requests so summaries/chat respond
+# instantly instead of paying a cold model-load each time. Set "-1" to keep forever.
+OLLAMA_KEEP_ALIVE = os.environ.get("OLLAMA_KEEP_ALIVE", "30m")
+
+
+def _ollama_extra(provider: str) -> dict:
+    """Extra request body to keep the Ollama model loaded. No-op for other providers."""
+    return {"extra_body": {"keep_alive": OLLAMA_KEEP_ALIVE}} if provider == "ollama" else {}
 
 
 def get_ollama_status() -> dict:
@@ -101,11 +144,29 @@ def get_ollama_status() -> dict:
 def get_system_info() -> dict:
     """Report local capabilities so the UI can guide the user toward a working setup."""
     has_cuda = cuda_available()
+    try:
+        import diarization
+        diarize_ok = diarization.diarization_available()
+    except Exception:
+        diarize_ok = False
+    try:
+        import urlimport
+        url_ok = urlimport.url_import_available()
+    except Exception:
+        url_ok = False
     return {
         "cuda_available": has_cuda,
         "default_device": "cuda" if has_cuda else "cpu",
         "ollama": get_ollama_status(),
+        "diarization_available": diarize_ok,
+        "url_import_available": url_ok,
+        "ffmpeg_available": shutil.which("ffmpeg") is not None,
     }
+
+
+def format_segment_line(start: float, end: float, text: str, speaker: str | None = None) -> str:
+    prefix = f"{speaker}: " if speaker else ""
+    return f"[{start:.2f}s -> {end:.2f}s] {prefix}{text.strip()}"
 
 def _unload_whisper_model(model) -> None:
     import gc
@@ -161,24 +222,31 @@ def transcribe_audio_with_cache(
     device: str,
     cache: WhisperModelCache,
     on_segment=None,
+    speaker_turns=None,
+    translate=False,
 ) -> str:
     """Transcribe audio using a shared model cache. Optional on_segment callback per segment."""
+    from diarization import assign_speaker
     model = cache.get_model(model_size, device)
-    segments, _info = model.transcribe(audio_path, beam_size=5, vad_filter=True)
+    task = "translate" if translate else "transcribe"
+    segments, _info = model.transcribe(audio_path, beam_size=5, vad_filter=True, task=task)
     lines: list[str] = []
     for segment in segments:
+        speaker = assign_speaker(speaker_turns, segment.start, segment.end) if speaker_turns else None
         data = {
             "start": segment.start,
             "end": segment.end,
             "text": segment.text,
+            "speaker": speaker,
         }
-        lines.append(f"[{segment.start:.2f}s -> {segment.end:.2f}s] {segment.text}")
+        lines.append(format_segment_line(segment.start, segment.end, segment.text, speaker))
         if on_segment:
             on_segment(data)
     return "\n".join(lines)
 
 
-def transcribe_audio_stream(audio_path: str, model_size: str, device: str):
+def transcribe_audio_stream(audio_path: str, model_size: str, device: str, speaker_turns=None, translate=False):
+    from diarization import assign_speaker
     device = resolve_device(device)
     compute_type = _compute_type_for(device)
     print(f"[DEBUG] Loading Whisper model {model_size} into memory on {device}...")
@@ -186,13 +254,16 @@ def transcribe_audio_stream(audio_path: str, model_size: str, device: str):
     print(f"[DEBUG] Model loaded successfully. Starting transcription for {audio_path}...")
 
     try:
-        segments, info = model.transcribe(audio_path, beam_size=5, vad_filter=True)
+        task = "translate" if translate else "transcribe"
+        segments, info = model.transcribe(audio_path, beam_size=5, vad_filter=True, task=task)
         yield f"data: {json.dumps({'event': 'language', 'language': info.language, 'device': device})}\n\n"
         for segment in segments:
+            speaker = assign_speaker(speaker_turns, segment.start, segment.end) if speaker_turns else None
             data = {
                 "start": segment.start,
                 "end": segment.end,
-                "text": segment.text
+                "text": segment.text,
+                "speaker": speaker,
             }
             print(f"[DEBUG] Transcribed chunk: [{segment.start:.2f}s - {segment.end:.2f}s] {segment.text}")
             yield f"data: {json.dumps(data)}\n\n"
@@ -211,6 +282,26 @@ DEFAULT_MODELS = {
     "lmstudio": "local-model",
     "openai_compatible": "local-model",
 }
+
+DEFAULT_EMBED_MODELS = {
+    "openai": "text-embedding-3-small",
+    "ollama": "nomic-embed-text",
+    "lmstudio": "nomic-embed-text",
+    "openai_compatible": "nomic-embed-text",
+}
+
+
+def get_embeddings(texts, provider, api_key, base_url, embed_model=""):
+    """Embed a list of texts. Anthropic has no embeddings API, so Claude users
+    fall back to a local Ollama embedding model."""
+    if provider == "claude":
+        provider, api_key, base_url = "ollama", "", ""
+    if provider not in OPENAI_COMPATIBLE:
+        provider = "ollama"
+    client, prov = get_llm_client(provider, api_key, base_url)
+    model = embed_model or DEFAULT_EMBED_MODELS.get(prov, "nomic-embed-text")
+    resp = client.embeddings.create(model=model, input=texts, **_ollama_extra(prov))
+    return [d.embedding for d in resp.data]
 
 
 def get_llm_client(provider, api_key, base_url):
@@ -232,6 +323,11 @@ def call_llm(client, provider, system_prompt, user_prompt, model_name, force_jso
         # OpenAI and Ollama both honor the JSON response_format flag; LM Studio/others vary.
         if force_json and provider in ("openai", "ollama"):
             extra_args["response_format"] = {"type": "json_object"}
+        extra_body = _ollama_extra(provider)
+        if extra_body and "extra_body" in extra_args:
+            extra_args["extra_body"].update(extra_body["extra_body"])
+        else:
+            extra_args.update(extra_body)
 
         messages = []
         if system_prompt:
@@ -256,7 +352,84 @@ def call_llm(client, provider, system_prompt, user_prompt, model_name, force_jso
         response = client.messages.create(**kwargs)
         return response.content[0].text
 
+# Keep prompts within reach of small local models (Ollama often defaults to a
+# ~4k token context). Beyond this we condense or retrieve instead of truncating.
+MAX_CONTEXT_CHARS = 12000
+
+
+def _split_text(text: str, size: int, overlap: int) -> list[str]:
+    parts: list[str] = []
+    start = 0
+    while start < len(text):
+        parts.append(text[start:start + size])
+        start += size - overlap
+        if start <= 0:
+            break
+    return parts
+
+
+def condense_transcript(transcript, provider, api_key, base_url, model_name, _depth=0):
+    """Map-reduce a long transcript into dense notes that fit a small context window.
+    Short transcripts pass through unchanged."""
+    transcript = transcript or ""
+    if len(transcript) <= MAX_CONTEXT_CHARS or _depth >= 2:
+        return transcript
+
+    client, prov = get_llm_client(provider, api_key, base_url)
+    system_prompt = (
+        "You compress meeting transcript excerpts into dense factual notes. Preserve "
+        "speaker names, decisions, action items, owners, dates, numbers, and key quotes. "
+        "Output concise bullet points only — no preamble."
+    )
+    notes = []
+    for chunk in _split_text(transcript, 8000, 200):
+        out = call_llm(
+            client, prov, system_prompt,
+            f"Transcript excerpt:\n{chunk}\n\nDense notes:",
+            model_name, force_json=False, max_tokens=1000,
+        )
+        if out:
+            notes.append(out.strip())
+    condensed = "\n".join(notes)
+    # If still too long, condense the notes again.
+    return condense_transcript(condensed, provider, api_key, base_url, model_name, _depth + 1)
+
+
+def select_relevant_context(transcript, question, provider, api_key, base_url):
+    """For long transcripts in chat, retrieve the chunks most relevant to the
+    question via embeddings. Falls back to head+tail truncation if embeddings
+    aren't available."""
+    if len(transcript or "") <= MAX_CONTEXT_CHARS:
+        return transcript
+    chunks = _split_text(transcript, 1500, 150)
+    try:
+        import math
+        vectors = get_embeddings(chunks + [question], provider, api_key, base_url)
+        q_vec = vectors[-1]
+        chunk_vecs = vectors[:-1]
+
+        def cos(a, b):
+            dot = sum(x * y for x, y in zip(a, b))
+            na = math.sqrt(sum(x * x for x in a))
+            nb = math.sqrt(sum(y * y for y in b))
+            return dot / (na * nb) if na and nb else 0.0
+
+        ranked = sorted(zip(chunks, chunk_vecs), key=lambda cv: cos(q_vec, cv[1]), reverse=True)
+        selected, total = [], 0
+        for chunk, _ in ranked:
+            if total + len(chunk) > MAX_CONTEXT_CHARS:
+                break
+            selected.append(chunk)
+            total += len(chunk)
+        return "\n...\n".join(selected)
+    except Exception as e:
+        print(f"[WARN] context retrieval failed, truncating: {e}")
+        half = MAX_CONTEXT_CHARS // 2
+        return transcript[:half] + "\n...\n" + transcript[-half:]
+
+
 def summarize_transcript(transcript: str, json_template: str, provider: str, api_key: str, base_url: str, model_name: str):
+    transcript = condense_transcript(transcript, provider, api_key, base_url, model_name)
     # Pre-process: convert the template into a simple skeleton the LLM just fills in
     try:
         tmpl = json.loads(json_template)
@@ -322,6 +495,54 @@ The JSON values should be empty strings, empty arrays, or descriptive placeholde
     return call_llm(client, prov, system_prompt, user_prompt, model_name, force_json=True)
 
 
+def warmup(provider, api_key, base_url, model_name):
+    """Preload the local model into memory so the first real request is instant.
+    Only meaningful for Ollama; a no-op for cloud providers (avoids spending tokens)."""
+    if provider != "ollama":
+        return {"warmed": False}
+    try:
+        client, prov = get_llm_client(provider, api_key, base_url)
+        client.chat.completions.create(
+            model=model_name or DEFAULT_MODELS["ollama"],
+            messages=[{"role": "user", "content": "ok"}],
+            max_tokens=1,
+            **_ollama_extra(prov),
+        )
+        return {"warmed": True}
+    except Exception as e:
+        print(f"[WARN] warmup failed: {e}")
+        return {"warmed": False}
+
+
+def suggest_tags(transcript, provider, api_key, base_url, model_name):
+    """Suggest a few short topical tags for a meeting. Returns raw model text."""
+    transcript = condense_transcript(transcript, provider, api_key, base_url, model_name)
+    system_prompt = (
+        "You label meetings with short topical tags. Respond with ONLY a JSON object "
+        '{"tags": ["...", "..."]} containing 3-6 lowercase tags (1-2 words each, no '
+        "punctuation) capturing the meeting's topics, project, or type. No prose."
+    )
+    client, prov = get_llm_client(provider, api_key, base_url)
+    return call_llm(client, prov, system_prompt, f"Transcript:\n{transcript}", model_name, force_json=True, max_tokens=200)
+
+
+def extract_action_items(transcript, provider, api_key, base_url, model_name):
+    """Ask the LLM for action items as JSON. Returns the raw model text (caller parses)."""
+    transcript = condense_transcript(transcript, provider, api_key, base_url, model_name)
+    system_prompt = (
+        "You extract action items from meeting transcripts. Find EVERY task, follow-up, "
+        "commitment, or to-do mentioned by anyone — list each as a separate item. "
+        'Respond with ONLY a JSON object of the form '
+        '{"action_items": [{"task": "...", "owner": "...", "due": "..."}]}. '
+        "'owner' is the person responsible; 'due' is any date or timeframe. Use an empty "
+        'string when not stated. If there are genuinely none, return {"action_items": []}. '
+        "No prose, no code fences."
+    )
+    user_prompt = f"Transcript:\n{transcript}"
+    client, prov = get_llm_client(provider, api_key, base_url)
+    return call_llm(client, prov, system_prompt, user_prompt, model_name, force_json=True, max_tokens=1500)
+
+
 def chat_with_transcript(
     transcript: str,
     question: str,
@@ -332,6 +553,7 @@ def chat_with_transcript(
     model_name: str,
 ):
     """Answer a free-form question grounded in a single meeting transcript."""
+    transcript = select_relevant_context(transcript, question, provider, api_key, base_url)
     system_prompt = (
         "You are a helpful meeting assistant. Answer the user's questions using ONLY the "
         "meeting transcript provided below. If the answer is not in the transcript, say so "
@@ -353,6 +575,7 @@ def chat_with_transcript(
             model=model_name or DEFAULT_MODELS.get(prov, "gpt-4o-mini"),
             messages=messages,
             temperature=0.3,
+            **_ollama_extra(prov),
         )
         return response.choices[0].message.content
 

@@ -1,0 +1,11 @@
+# Optional speaker diarization (who-said-what). Heavy: pulls in PyTorch.
+# Install on top of requirements.txt:  pip install -r requirements-diarize.txt
+#
+# Then, to enable it:
+#   1. Accept the license at https://hf.co/pyannote/speaker-diarization-3.1
+#   2. Set an access token:  setx HF_TOKEN "hf_xxx"   (open a new terminal after)
+# A CUDA GPU is strongly recommended — diarization is slow on CPU.
+# Without these, the app simply skips diarization and transcribes normally.
+pyannote.audio>=3.1
+torch
+torchaudio

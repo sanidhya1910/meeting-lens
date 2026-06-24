@@ -7,6 +7,8 @@ export type Meeting = {
   transcript: string;
   summary: unknown | null;
   tags?: string[];
+  has_audio?: boolean;
+  action_items?: ActionItem[];
 };
 
 export type OllamaStatus = {
@@ -19,9 +21,29 @@ export type SystemInfo = {
   cuda_available: boolean;
   default_device: string;
   ollama: OllamaStatus;
+  diarization_available: boolean;
+  url_import_available: boolean;
+  ffmpeg_available: boolean;
 };
 
 export type ChatMessage = { role: 'user' | 'assistant'; content: string };
+
+export type ChatSource = { meeting_id: string; title: string };
+
+export type ActionItem = {
+  id: string;
+  task: string;
+  owner: string;
+  due: string;
+  status: 'open' | 'done';
+};
+
+export type TranscriptSegment = {
+  start: number;
+  end: number;
+  speaker: string | null;
+  text: string;
+};
 
 export type Template = { name: string; content: string };
 

@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react';
-import { Home, FileText, Video, Settings, Sparkles, Sun, Moon, Monitor } from 'lucide-react';
+import { useState, useEffect, useRef } from 'react';
+import { Home, FileText, Video, Settings, Sparkles, Sun, Moon, Monitor, Search, Library, FileJson } from 'lucide-react';
 import axios from 'axios';
 import { apiUrl } from './api';
 import { loadLastTranscribeMeetingIds } from './utils/batchStorage';
@@ -8,6 +8,8 @@ import { useSystemInfo } from './hooks/useSystemInfo';
 import { useToast } from './components/Toast';
 import { MeetingSidebar } from './components/MeetingSidebar';
 import { ConfirmDialog } from './components/ConfirmDialog';
+import { SearchPalette } from './components/SearchPalette';
+import { OnboardingModal } from './components/OnboardingModal';
 import { HomeView } from './views/HomeView';
 import { NotesView } from './views/NotesView';
 import { TranscribeModal } from './components/modals/TranscribeModal';
@@ -15,7 +17,9 @@ import { RecordModal } from './components/modals/RecordModal';
 import { BulkTranscribeModal } from './components/modals/BulkTranscribeModal';
 import { BulkSummarizeModal } from './components/modals/BulkSummarizeModal';
 import { TemplateModal } from './components/modals/TemplateModal';
+import { TemplatesModal } from './components/modals/TemplatesModal';
 import { SettingsModal } from './components/modals/SettingsModal';
+import { LibraryChatModal } from './components/modals/LibraryChatModal';
 import type { Meeting, Template } from './types';
 import './index.css';
 
@@ -30,17 +34,22 @@ function App() {
   const [showBulkSummarizeModal, setShowBulkSummarizeModal] = useState(false);
   const [summarizePreselectIds, setSummarizePreselectIds] = useState<string[] | undefined>();
   const [showTemplateModal, setShowTemplateModal] = useState(false);
+  const [showTemplatesModal, setShowTemplatesModal] = useState(false);
   const [showSettingsModal, setShowSettingsModal] = useState(false);
+  const [showSearch, setShowSearch] = useState(false);
+  const [showLibraryChat, setShowLibraryChat] = useState(false);
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
 
   const { pref, cycle } = useTheme();
-  const { info: systemInfo, refresh: refreshSystem } = useSystemInfo();
+  const { info: systemInfo, loading: systemLoading, refresh: refreshSystem } = useSystemInfo();
+  const [showOnboarding, setShowOnboarding] = useState(false);
   const toast = useToast();
 
   const [provider, setProvider] = useState(() => localStorage.getItem('llmProvider') || 'ollama');
   const [apiKey, setApiKey] = useState(() => localStorage.getItem('llmApiKey') || '');
   const [baseUrl, setBaseUrl] = useState(() => localStorage.getItem('llmBaseUrl') || '');
   const [modelName, setModelName] = useState(() => localStorage.getItem('llmModelName') || '');
+  const [embedModel, setEmbedModel] = useState(() => localStorage.getItem('llmEmbedModel') || '');
   const [availableTemplates, setAvailableTemplates] = useState<Template[]>([]);
 
   const llm = { provider, apiKey, baseUrl, modelName };
@@ -50,7 +59,48 @@ function App() {
     localStorage.setItem('llmApiKey', apiKey);
     localStorage.setItem('llmBaseUrl', baseUrl);
     localStorage.setItem('llmModelName', modelName);
-  }, [provider, apiKey, baseUrl, modelName]);
+    localStorage.setItem('llmEmbedModel', embedModel);
+  }, [provider, apiKey, baseUrl, modelName, embedModel]);
+
+  // Global keyboard shortcut: ⌘K / Ctrl+K opens search.
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        setShowSearch(s => !s);
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, []);
+
+  const openMeeting = (id: string) => {
+    setView('notes');
+    setSelectedMeetingId(id);
+  };
+
+  // First-run onboarding: show once if a key dependency is missing.
+  useEffect(() => {
+    if (systemLoading || localStorage.getItem('onboardingSeen')) return;
+    if (!systemInfo.ffmpeg_available || !systemInfo.ollama.available) setShowOnboarding(true);
+  }, [systemLoading, systemInfo]);
+
+  const closeOnboarding = () => {
+    setShowOnboarding(false);
+    localStorage.setItem('onboardingSeen', '1');
+  };
+
+  // Warm up the local model once on load so the first summary/chat is instant.
+  const warmedRef = useRef(false);
+  useEffect(() => {
+    if (systemLoading || warmedRef.current) return;
+    if (provider === 'ollama' && systemInfo.ollama.available) {
+      warmedRef.current = true;
+      axios.post(apiUrl('/api/warmup'), {
+        llm_provider: provider, llm_api_key: apiKey, llm_base_url: baseUrl, llm_model: modelName,
+      }).catch(() => {});
+    }
+  }, [systemLoading, systemInfo, provider, apiKey, baseUrl, modelName]);
 
   const fetchMeetings = async () => {
     try {
@@ -127,6 +177,20 @@ function App() {
           <div className={`nav-item ${view === 'notes' ? 'active' : ''}`} onClick={() => setView('notes')}>
             <FileText size={20} /> Meeting Notes
           </div>
+          <div className="nav-item" onClick={() => setShowSearch(true)}>
+            <Search size={20} /> Search
+            <kbd className="nav-kbd">⌘K</kbd>
+          </div>
+          <div
+            className="nav-item"
+            onClick={() => meetings.length > 0 && setShowLibraryChat(true)}
+            style={meetings.length === 0 ? { opacity: 0.5, pointerEvents: 'none' } : undefined}
+          >
+            <Library size={20} /> Ask Library
+          </div>
+          <div className="nav-item" onClick={() => setShowTemplatesModal(true)}>
+            <FileJson size={20} /> Templates
+          </div>
         </nav>
 
         {view === 'notes' && (
@@ -179,6 +243,7 @@ function App() {
             onBulkTranscribeClick={() => setShowBulkTranscribeModal(true)}
             onBulkSummarizeClick={() => openBulkSummarize()}
             onTemplateClick={() => setShowTemplateModal(true)}
+            onLibraryChatClick={() => setShowLibraryChat(true)}
           />
         )}
         {view === 'notes' && (
@@ -195,6 +260,8 @@ function App() {
       {showTranscribeModal && (
         <TranscribeModal
           cudaAvailable={systemInfo.cuda_available}
+          diarizeAvailable={systemInfo.diarization_available}
+          urlImportAvailable={systemInfo.url_import_available}
           onClose={() => setShowTranscribeModal(false)}
           onSuccess={id => {
             fetchMeetings();
@@ -207,6 +274,7 @@ function App() {
 
       {showRecordModal && (
         <RecordModal
+          diarizeAvailable={systemInfo.diarization_available}
           onClose={() => setShowRecordModal(false)}
           onSuccess={id => {
             fetchMeetings();
@@ -220,6 +288,7 @@ function App() {
       {showBulkTranscribeModal && (
         <BulkTranscribeModal
           cudaAvailable={systemInfo.cuda_available}
+          diarizeAvailable={systemInfo.diarization_available}
           onClose={() => setShowBulkTranscribeModal(false)}
           onComplete={fetchMeetings}
           onSummarizeBatch={ids => {
@@ -259,6 +328,18 @@ function App() {
         />
       )}
 
+      {showTemplatesModal && (
+        <TemplatesModal
+          templates={availableTemplates}
+          onChange={fetchTemplates}
+          onClose={() => setShowTemplatesModal(false)}
+          onOpenGenerator={() => {
+            setShowTemplatesModal(false);
+            setShowTemplateModal(true);
+          }}
+        />
+      )}
+
       {showSettingsModal && (
         <SettingsModal
           onClose={() => setShowSettingsModal(false)}
@@ -270,8 +351,35 @@ function App() {
           setBaseUrl={setBaseUrl}
           modelName={modelName}
           setModelName={setModelName}
+          embedModel={embedModel}
+          setEmbedModel={setEmbedModel}
           systemInfo={systemInfo}
           onRefreshSystem={refreshSystem}
+        />
+      )}
+
+      {showSearch && (
+        <SearchPalette
+          meetings={meetings}
+          onSelect={openMeeting}
+          onClose={() => setShowSearch(false)}
+        />
+      )}
+
+      {showLibraryChat && (
+        <LibraryChatModal
+          {...llm}
+          embedModel={embedModel}
+          onClose={() => setShowLibraryChat(false)}
+          onOpenMeeting={openMeeting}
+        />
+      )}
+
+      {showOnboarding && (
+        <OnboardingModal
+          systemInfo={systemInfo}
+          onClose={closeOnboarding}
+          onRefresh={refreshSystem}
         />
       )}
 

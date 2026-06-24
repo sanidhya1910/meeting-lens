@@ -7,6 +7,7 @@ import { consumeSseStream } from '../../utils/sse';
 type Props = {
   onClose: () => void;
   onSuccess: (meetingId: string) => void;
+  diarizeAvailable?: boolean;
 };
 
 type Phase = 'idle' | 'recording' | 'transcribing';
@@ -17,10 +18,12 @@ function fmt(seconds: number): string {
   return `${m}:${String(s).padStart(2, '0')}`;
 }
 
-export function RecordModal({ onClose, onSuccess }: Props) {
+export function RecordModal({ onClose, onSuccess, diarizeAvailable = false }: Props) {
   const [phase, setPhase] = useState<Phase>('idle');
   const [title, setTitle] = useState('');
   const [asrModel, setAsrModel] = useState('tiny');
+  const [diarize, setDiarize] = useState(false);
+  const [translate, setTranslate] = useState(false);
   const [elapsed, setElapsed] = useState(0);
   const [progressText, setProgressText] = useState('');
   const [error, setError] = useState('');
@@ -77,6 +80,8 @@ export function RecordModal({ onClose, onSuccess }: Props) {
     formData.append('file', blob, 'recording.webm');
     formData.append('asr_model', asrModel);
     formData.append('device', 'auto');
+    formData.append('diarize', diarize ? 'true' : 'false');
+    formData.append('translate', translate ? 'true' : 'false');
     if (title.trim()) formData.append('title', title.trim());
 
     try {
@@ -149,6 +154,22 @@ export function RecordModal({ onClose, onSuccess }: Props) {
               <option key={m.id} value={m.id}>{m.name}</option>
             ))}
           </select>
+        </div>
+
+        {diarizeAvailable && (
+          <div className="form-group">
+            <label className="checkbox-label">
+              <input type="checkbox" checked={diarize} onChange={e => setDiarize(e.target.checked)} disabled={busy} />
+              Detect &amp; label speakers
+            </label>
+          </div>
+        )}
+
+        <div className="form-group">
+          <label className="checkbox-label">
+            <input type="checkbox" checked={translate} onChange={e => setTranslate(e.target.checked)} disabled={busy} />
+            Translate to English
+          </label>
         </div>
 
         {phase === 'transcribing' && (

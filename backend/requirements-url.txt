@@ -1,0 +1,4 @@
+# Optional: import audio from a URL (YouTube, etc.).
+# Install on top of requirements.txt:  pip install -r requirements-url.txt
+# Needs ffmpeg (already required by Meeting Lens).
+yt-dlp

@@ -14,6 +14,7 @@ def load_meetings() -> list[dict[str, Any]]:
     for m in meetings:
         m.setdefault("tags", [])
         m.setdefault("summary", None)
+        m.setdefault("action_items", [])
     return meetings
 
 
@@ -29,6 +30,7 @@ def insert_meeting(meeting_id: str, title: str, transcript: str) -> dict[str, An
         "transcript": transcript,
         "summary": None,
         "tags": [],
+        "action_items": [],
     }
 
     def add(meetings: list) -> list:

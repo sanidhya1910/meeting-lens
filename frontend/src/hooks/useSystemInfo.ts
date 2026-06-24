@@ -7,6 +7,9 @@ const FALLBACK: SystemInfo = {
   cuda_available: false,
   default_device: 'cpu',
   ollama: { available: false, models: [], base_url: 'http://localhost:11434' },
+  diarization_available: false,
+  url_import_available: false,
+  ffmpeg_available: true,
 };
 
 /** Polls the backend for local capabilities (GPU + Ollama status). */

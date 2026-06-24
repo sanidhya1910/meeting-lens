@@ -14,14 +14,17 @@ type Props = {
   onComplete: () => void;
   onSummarizeBatch?: (meetingIds: string[]) => void;
   cudaAvailable?: boolean;
+  diarizeAvailable?: boolean;
 };
 
 const TERMINAL = new Set(['completed', 'cancelled', 'failed']);
 
-export function BulkTranscribeModal({ onClose, onComplete, onSummarizeBatch, cudaAvailable = false }: Props) {
+export function BulkTranscribeModal({ onClose, onComplete, onSummarizeBatch, cudaAvailable = false, diarizeAvailable = false }: Props) {
   const [files, setFiles] = useState<File[]>([]);
   const [asrModel, setAsrModel] = useState('tiny');
   const [useGpu, setUseGpu] = useState(cudaAvailable);
+  const [diarize, setDiarize] = useState(false);
+  const [translate, setTranslate] = useState(false);
   const [running, setRunning] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const [batch, setBatch] = useState<TranscribeBatchJob | null>(null);
@@ -59,6 +62,8 @@ export function BulkTranscribeModal({ onClose, onComplete, onSummarizeBatch, cud
     files.forEach(f => formData.append('files', f));
     formData.append('asr_model', asrModel);
     formData.append('device', useGpu ? 'auto' : 'cpu');
+    formData.append('diarize', diarize ? 'true' : 'false');
+    formData.append('translate', translate ? 'true' : 'false');
 
     try {
       const res = await axios.post(apiUrl('/api/transcribe/batch'), formData);
@@ -149,6 +154,22 @@ export function BulkTranscribeModal({ onClose, onComplete, onSummarizeBatch, cud
                 <div className="device-note"><Cpu size={15} /> Transcribing on CPU — Tiny or Base recommended.</div>
               </div>
             )}
+
+            {diarizeAvailable && (
+              <div className="form-group">
+                <label className="checkbox-label">
+                  <input type="checkbox" checked={diarize} onChange={e => setDiarize(e.target.checked)} disabled={running} />
+                  Detect &amp; label speakers
+                </label>
+              </div>
+            )}
+
+            <div className="form-group">
+              <label className="checkbox-label">
+                <input type="checkbox" checked={translate} onChange={e => setTranslate(e.target.checked)} disabled={running} />
+                Translate to English
+              </label>
+            </div>
 
             <button className="btn" onClick={handleStart} disabled={running || !files.length} style={{ width: '100%' }}>
               {running ? <><div className="loader" /> Starting...</> : `Transcribe ${files.length || 0} file(s)`}

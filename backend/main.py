@@ -2,7 +2,8 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import os
 import uuid
@@ -16,13 +17,23 @@ from pipeline import (
     generate_meeting_title,
     generate_custom_template,
     chat_with_transcript,
+    extract_action_items,
+    suggest_tags,
+    warmup,
     get_system_info,
+    save_playback_audio,
+    playback_audio_path,
+    has_playback_audio,
+    delete_playback_audio,
+    format_segment_line,
     DATA_DIR,
     TEMPLATES_DIR,
 )
+import diarization as diarization_service
 import batch as batch_service
 import summarize_batch as summarize_batch_service
 import meetings as meetings_service
+import rag as rag_service
 from errors import MeetingNotFoundError, MeetingNoTranscriptError
 import json
 import asyncio
@@ -43,6 +54,17 @@ class SummarizeBatchRequest(BaseModel):
 class ChatRequest(BaseModel):
     question: str
     history: list[dict] = []
+    llm_provider: str = "ollama"
+    llm_api_key: str = ""
+    llm_base_url: str = ""
+    llm_model: str = ""
+
+
+class LibraryChatRequest(ChatRequest):
+    embed_model: str = ""
+
+
+class LlmRequest(BaseModel):
     llm_provider: str = "ollama"
     llm_api_key: str = ""
     llm_base_url: str = ""
@@ -157,6 +179,14 @@ def system_info():
     return get_system_info()
 
 
+@app.post("/api/warmup")
+async def warmup_model(body: LlmRequest):
+    result = await asyncio.to_thread(
+        warmup, body.llm_provider, body.llm_api_key, body.llm_base_url, body.llm_model,
+    )
+    return result
+
+
 @app.get("/api/asr-models")
 def get_asr_models():
     return {"models": [
@@ -182,6 +212,39 @@ def get_templates():
                 except Exception:
                     pass
     return {"templates": templates}
+
+
+def _safe_template_path(filename: str) -> str:
+    name = os.path.basename((filename or "").replace("\\", "/"))
+    if not name.endswith(".json"):
+        name += ".json"
+    if not name or name in (".json",) or "/" in name:
+        raise HTTPException(status_code=400, detail="Invalid template name")
+    return os.path.join(TEMPLATES_DIR, name)
+
+
+@app.put("/api/templates/{filename}")
+async def save_template(filename: str, body: dict):
+    content = body.get("content", "")
+    try:
+        # Validate it is JSON; store pretty-printed.
+        parsed = json.loads(content)
+        content = json.dumps(parsed, indent=2)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Template content must be valid JSON")
+    path = _safe_template_path(filename)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(content)
+    return {"success": True, "name": os.path.basename(path), "content": content}
+
+
+@app.delete("/api/templates/{filename}")
+def delete_template(filename: str):
+    path = _safe_template_path(filename)
+    if not os.path.exists(path):
+        raise HTTPException(status_code=404, detail="Template not found")
+    os.remove(path)
+    return {"success": True}
 
 
 @app.post("/api/templates/generate")
@@ -220,14 +283,26 @@ async def create_template(
 
 @app.get("/api/meetings")
 def get_all_meetings():
-    return {"meetings": meetings_service.load_meetings()}
+    meetings = meetings_service.load_meetings()
+    for m in meetings:
+        m["has_audio"] = has_playback_audio(m["id"])
+    return {"meetings": meetings}
 
 
 @app.delete("/api/meetings/{meeting_id}")
 def delete_meeting(meeting_id: str):
     if not meetings_service.delete_meeting(meeting_id):
         raise HTTPException(status_code=404, detail="Meeting not found")
+    delete_playback_audio(meeting_id)
     return {"success": True}
+
+
+@app.get("/api/meetings/{meeting_id}/audio")
+def get_meeting_audio(meeting_id: str):
+    path = playback_audio_path(meeting_id)
+    if not os.path.exists(path):
+        raise HTTPException(status_code=404, detail="No audio stored for this meeting")
+    return FileResponse(path, media_type="audio/mpeg", filename=f"{meeting_id}.mp3")
 
 
 @app.get("/api/transcribe/batches")
@@ -267,6 +342,8 @@ async def transcribe_batch(
     files: list[UploadFile] = File(...),
     asr_model: str = Form("tiny"),
     device: str = Form("auto"),
+    diarize: str = Form("false"),
+    translate: str = Form("false"),
 ):
     if not files:
         raise HTTPException(status_code=400, detail="At least one file is required")
@@ -280,7 +357,7 @@ async def transcribe_batch(
             )
 
     filenames = [f.filename or f"file_{i}" for i, f in enumerate(files)]
-    batch = batch_service.create_batch(filenames, asr_model, device)
+    batch = batch_service.create_batch(filenames, asr_model, device, diarize == "true", translate == "true")
 
     for upload, item in zip(files, batch["items"]):
         batch_service.save_uploaded_file(batch, item["filename"], upload.file)
@@ -294,93 +371,135 @@ async def transcribe_batch(
     }
 
 
+async def _transcription_stream_response(
+    input_path: str, title: str, asr_model: str, device: str, diarize: bool, translate: bool,
+):
+    """Shared streaming transcription used by both file upload and URL import.
+    `input_path` is a media file already on disk; it is removed when done."""
+    meeting_id = str(uuid.uuid4())
+    audio_path = os.path.join(DATA_DIR, f"{meeting_id}.wav")
+    await asyncio.to_thread(extract_audio, input_path, audio_path)
+
+    speaker_turns = None
+    if diarize and diarization_service.diarization_available():
+        speaker_turns = await asyncio.to_thread(diarization_service.diarize, audio_path)
+
+    async def event_stream():
+        loop = asyncio.get_running_loop()
+        q = asyncio.Queue()
+
+        def worker():
+            try:
+                for chunk in transcribe_audio_stream(audio_path, asr_model, device, speaker_turns, translate):
+                    asyncio.run_coroutine_threadsafe(q.put(chunk), loop)
+                asyncio.run_coroutine_threadsafe(q.put(None), loop)
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                error_chunk = f"data: {json.dumps({'error': str(e)})}\n\n"
+                asyncio.run_coroutine_threadsafe(q.put(error_chunk), loop)
+                asyncio.run_coroutine_threadsafe(q.put(None), loop)
+            finally:
+                try:
+                    if os.path.exists(audio_path):
+                        save_playback_audio(audio_path, meeting_id)
+                        os.remove(audio_path)
+                    if os.path.exists(input_path):
+                        os.remove(input_path)
+                except OSError:
+                    pass
+
+        threading.Thread(target=worker, daemon=True).start()
+
+        transcript_text = ""
+        while True:
+            chunk = await q.get()
+            if chunk is None:
+                break
+
+            if chunk.startswith("data: ") and "[DONE]" not in chunk:
+                data_str = chunk[6:].strip()
+                try:
+                    data_json = json.loads(data_str)
+                    if "error" not in data_json and "start" in data_json:
+                        transcript_text += format_segment_line(
+                            data_json["start"], data_json["end"],
+                            data_json["text"], data_json.get("speaker"),
+                        ) + "\n"
+                except json.JSONDecodeError:
+                    pass
+            yield chunk
+
+        try:
+            final_title = title if title else f"Meeting {datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}"
+            await asyncio.to_thread(
+                meetings_service.insert_meeting, meeting_id, final_title, transcript_text,
+            )
+            yield f"data: {json.dumps({'event': 'completed', 'meeting_id': meeting_id})}\n\n"
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
 @app.post("/api/transcribe")
 async def transcribe_video(
     file: UploadFile = File(...),
     asr_model: str = Form("tiny"),
     device: str = Form("auto"),
     title: str = Form(""),
+    diarize: str = Form("false"),
+    translate: str = Form("false"),
 ):
     try:
         _validate_media_filename(file.filename or "")
-        meeting_id = str(uuid.uuid4())
-        video_path = os.path.join(DATA_DIR, f"{meeting_id}_{file.filename}")
-        audio_path = os.path.join(DATA_DIR, f"{meeting_id}.wav")
+        tmp_path = os.path.join(DATA_DIR, f"upload_{uuid.uuid4()}_{os.path.basename(file.filename or 'media')}")
 
-        with open(video_path, "wb") as buffer:
+        with open(tmp_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
 
-        if os.path.getsize(video_path) > MAX_UPLOAD_BYTES:
-            os.remove(video_path)
+        if os.path.getsize(tmp_path) > MAX_UPLOAD_BYTES:
+            os.remove(tmp_path)
             raise HTTPException(status_code=413, detail="File exceeds maximum upload size")
 
-        await asyncio.to_thread(extract_audio, video_path, audio_path)
-
-        async def event_stream():
-            loop = asyncio.get_running_loop()
-            q = asyncio.Queue()
-
-            def worker():
-                try:
-                    for chunk in transcribe_audio_stream(audio_path, asr_model, device):
-                        asyncio.run_coroutine_threadsafe(q.put(chunk), loop)
-                    asyncio.run_coroutine_threadsafe(q.put(None), loop)
-                except Exception as e:
-                    import traceback
-                    traceback.print_exc()
-                    error_chunk = f"data: {json.dumps({'error': str(e)})}\n\n"
-                    asyncio.run_coroutine_threadsafe(q.put(error_chunk), loop)
-                    asyncio.run_coroutine_threadsafe(q.put(None), loop)
-                finally:
-                    try:
-                        if os.path.exists(audio_path):
-                            os.remove(audio_path)
-                        if os.path.exists(video_path):
-                            os.remove(video_path)
-                    except OSError:
-                        pass
-
-            threading.Thread(target=worker, daemon=True).start()
-
-            transcript_text = ""
-            while True:
-                chunk = await q.get()
-                if chunk is None:
-                    break
-
-                if chunk.startswith("data: ") and "[DONE]" not in chunk:
-                    data_str = chunk[6:].strip()
-                    try:
-                        data_json = json.loads(data_str)
-                        if "error" not in data_json and "start" in data_json:
-                            transcript_text += (
-                                f"[{data_json['start']:.2f}s -> {data_json['end']:.2f}s] {data_json['text']}\n"
-                            )
-                    except json.JSONDecodeError:
-                        pass
-                yield chunk
-
-            try:
-                final_title = title if title else f"Meeting {datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}"
-                await asyncio.to_thread(
-                    meetings_service.insert_meeting,
-                    meeting_id,
-                    final_title,
-                    transcript_text,
-                )
-                yield f"data: {json.dumps({'event': 'completed', 'meeting_id': meeting_id})}\n\n"
-            except Exception as e:
-                import traceback
-                traceback.print_exc()
-                yield f"data: {json.dumps({'error': str(e)})}\n\n"
-
-        return StreamingResponse(event_stream(), media_type="text/event-stream")
+        return await _transcription_stream_response(
+            tmp_path, title, asr_model, device, diarize == "true", translate == "true",
+        )
     except HTTPException:
         raise
     except Exception as e:
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/transcribe/url")
+async def transcribe_url(
+    url: str = Form(...),
+    asr_model: str = Form("tiny"),
+    device: str = Form("auto"),
+    title: str = Form(""),
+    diarize: str = Form("false"),
+    translate: str = Form("false"),
+):
+    import urlimport
+    if not urlimport.url_import_available():
+        raise HTTPException(status_code=400, detail="URL import requires yt-dlp (pip install -r requirements-url.txt)")
+    if not url.strip():
+        raise HTTPException(status_code=400, detail="A URL is required")
+    try:
+        media_path, fetched_title = await asyncio.to_thread(urlimport.download_audio, url.strip(), DATA_DIR)
+        return await _transcription_stream_response(
+            media_path, title or fetched_title, asr_model, device, diarize == "true", translate == "true",
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"URL import failed: {e}")
 
 
 @app.post("/api/summarize/batch")
@@ -545,6 +664,126 @@ async def chat_meeting(meeting_id: str, body: ChatRequest):
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
+
+def _normalize_action_items(parsed) -> list[dict]:
+    if isinstance(parsed, dict):
+        items = parsed.get("action_items", [])
+    elif isinstance(parsed, list):
+        items = parsed
+    else:
+        items = []
+    result = []
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        task = str(it.get("task") or it.get("item") or "").strip()
+        if not task:
+            continue
+        result.append({
+            "id": str(uuid.uuid4()),
+            "task": task,
+            "owner": str(it.get("owner") or "").strip(),
+            "due": str(it.get("due") or it.get("due_date") or "").strip(),
+            "status": "open",
+        })
+    return result
+
+
+@app.post("/api/meetings/{meeting_id}/action-items/extract")
+async def extract_action_items_ep(meeting_id: str, body: LlmRequest):
+    try:
+        meeting = meetings_service.get_meeting(meeting_id)
+    except MeetingNotFoundError as e:
+        raise _map_domain_error(e)
+    transcript = (meeting.get("transcript") or "").strip()
+    if not transcript:
+        raise _map_domain_error(MeetingNoTranscriptError(meeting_id))
+    try:
+        raw = await asyncio.to_thread(
+            extract_action_items, transcript,
+            body.llm_provider, body.llm_api_key, body.llm_base_url, body.llm_model,
+        )
+        items = _normalize_action_items(_parse_summary_json(raw))
+
+        def apply(m: dict) -> None:
+            m["action_items"] = items
+
+        meetings_service.update_meeting(meeting_id, apply)
+        return {"action_items": items}
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/meetings/{meeting_id}/tags/suggest")
+async def suggest_meeting_tags(meeting_id: str, body: LlmRequest):
+    try:
+        meeting = meetings_service.get_meeting(meeting_id)
+    except MeetingNotFoundError as e:
+        raise _map_domain_error(e)
+    transcript = (meeting.get("transcript") or "").strip()
+    if not transcript:
+        raise _map_domain_error(MeetingNoTranscriptError(meeting_id))
+    try:
+        raw = await asyncio.to_thread(
+            suggest_tags, transcript,
+            body.llm_provider, body.llm_api_key, body.llm_base_url, body.llm_model,
+        )
+        parsed = _parse_summary_json(raw)
+        tags = parsed.get("tags", []) if isinstance(parsed, dict) else (parsed if isinstance(parsed, list) else [])
+        clean = sorted({str(t).strip().lower() for t in tags if str(t).strip()})[:6]
+        return {"tags": clean}
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.put("/api/meetings/{meeting_id}/action-items")
+async def update_action_items(meeting_id: str, body: dict):
+    items = body.get("action_items", [])
+    if not isinstance(items, list):
+        raise HTTPException(status_code=400, detail="action_items must be a list")
+    try:
+        def apply(m: dict) -> None:
+            m["action_items"] = items
+
+        meetings_service.update_meeting(meeting_id, apply)
+        return {"success": True, "action_items": items}
+    except MeetingNotFoundError as e:
+        raise _map_domain_error(e)
+
+
+@app.post("/api/library/chat")
+async def chat_library(body: LibraryChatRequest):
+    if not body.question.strip():
+        raise HTTPException(status_code=400, detail="A question is required")
+    cfg = {
+        "provider": body.llm_provider,
+        "api_key": body.llm_api_key,
+        "base_url": body.llm_base_url,
+        "model": body.llm_model,
+        "embed_model": body.embed_model,
+    }
+    try:
+        result = await asyncio.to_thread(
+            rag_service.answer_library_question, body.question, body.history, cfg
+        )
+        return result
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# Serve the built frontend (production / desktop) if it has been built.
+# Mounted last so all /api routes above take precedence over the SPA catch-all.
+_FRONTEND_DIST = os.path.join(os.path.dirname(DATA_DIR), "frontend", "dist")
+if os.path.isdir(_FRONTEND_DIST):
+    app.mount("/", StaticFiles(directory=_FRONTEND_DIST, html=True), name="frontend")
+    print(f"[startup] Serving frontend from {_FRONTEND_DIST}")
 
 
 if __name__ == "__main__":

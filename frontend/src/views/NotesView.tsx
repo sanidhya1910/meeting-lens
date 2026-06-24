@@ -1,14 +1,15 @@
 import { useEffect, useState } from 'react';
-import { FileText, FileJson, Download, Sparkles, Copy, MessageSquare, BookOpen } from 'lucide-react';
+import { FileText, FileJson, Download, Sparkles, Copy, MessageSquare, BookOpen, Captions, ListChecks } from 'lucide-react';
 import axios from 'axios';
-// @ts-ignore
-import html2pdf from 'html2pdf.js';
 import { apiUrl } from '../api';
 import { SummaryRenderer } from '../components/SummaryRenderer';
 import { ChatPanel } from '../components/ChatPanel';
+import { ActionItems } from '../components/ActionItems';
 import { TagEditor } from '../components/TagEditor';
+import { TranscriptPlayer } from '../components/TranscriptPlayer';
 import { useToast } from '../components/Toast';
 import { summaryToMarkdown, copyToClipboard, downloadTextFile } from '../utils/exportMarkdown';
+import { parseTranscript, isTimestamped, segmentsToSrt, segmentsToVtt } from '../utils/transcript';
 import type { LlmSettings, Meeting, Template } from '../types';
 
 type Props = LlmSettings & {
@@ -36,7 +37,7 @@ export function NotesView({
   const [isRegeneratingSummary, setIsRegeneratingSummary] = useState(false);
   const [isEditingTranscript, setIsEditingTranscript] = useState(false);
   const [editedTranscript, setEditedTranscript] = useState('');
-  const [tab, setTab] = useState<'notes' | 'chat'>('notes');
+  const [tab, setTab] = useState<'notes' | 'actions' | 'chat'>('notes');
 
   useEffect(() => {
     if (meeting) {
@@ -104,6 +105,44 @@ export function NotesView({
     }
   };
 
+  const handleSuggestTags = async (): Promise<string[]> => {
+    try {
+      const res = await axios.post(apiUrl(`/api/meetings/${meeting.id}/tags/suggest`), {
+        llm_provider: provider,
+        llm_api_key: apiKey,
+        llm_base_url: baseUrl,
+        llm_model: modelName,
+      });
+      return res.data.tags ?? [];
+    } catch {
+      toast.error('Tag suggestion failed');
+      return [];
+    }
+  };
+
+  const handleRenameSpeaker = async (oldLabel: string, newLabel: string) => {
+    const esc = oldLabel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    // Replace the speaker label only where it prefixes a segment: "] Speaker 1:"
+    const updated = meeting.transcript.replace(new RegExp(`(\\]\\s*)${esc}:`, 'g'), `$1${newLabel}:`);
+    const fd = new FormData();
+    fd.append('transcript', updated);
+    try {
+      await axios.put(apiUrl(`/api/meetings/${meeting.id}/transcript`), fd);
+      onSummaryGenerated();
+      toast.success(`Renamed ${oldLabel} → ${newLabel}`);
+    } catch {
+      toast.error('Failed to rename speaker');
+    }
+  };
+
+  const exportSubtitles = (kind: 'srt' | 'vtt') => {
+    const segments = parseTranscript(meeting.transcript);
+    if (!segments.length) return;
+    const text = kind === 'srt' ? segmentsToSrt(segments) : segmentsToVtt(segments);
+    downloadTextFile(`${meeting.title.replace(/\s+/g, '_')}.${kind}`, text, 'text/plain');
+    toast.success(`${kind.toUpperCase()} downloaded`);
+  };
+
   const handleCopyMarkdown = async () => {
     if (!meeting.summary) return;
     const md = summaryToMarkdown(meeting.title, meeting.date, meeting.summary);
@@ -118,10 +157,13 @@ export function NotesView({
     toast.success('Markdown downloaded');
   };
 
-  const handleDownloadPdf = () => {
+  const handleDownloadPdf = async () => {
     if (!meeting.summary) return;
     const source = document.getElementById('summary-content-export');
     if (!source) return;
+    // Loaded on demand so jsPDF/html2canvas stay out of the main bundle.
+    // @ts-ignore - html2pdf.js ships no types
+    const html2pdf = (await import('html2pdf.js')).default;
 
     const wrapper = document.createElement('div');
     wrapper.style.cssText =
@@ -155,12 +197,16 @@ export function NotesView({
       <div className="page-header notes-header">
         <h1>{meeting.title}</h1>
         <p>{new Date(meeting.date).toLocaleString()}</p>
-        <TagEditor tags={meeting.tags ?? []} onChange={handleSaveTags} />
+        <TagEditor tags={meeting.tags ?? []} onChange={handleSaveTags} onSuggest={handleSuggestTags} />
       </div>
 
       <div className="tab-bar">
         <button className={`tab ${tab === 'notes' ? 'active' : ''}`} onClick={() => setTab('notes')}>
           <BookOpen size={16} /> Notes
+        </button>
+        <button className={`tab ${tab === 'actions' ? 'active' : ''}`} onClick={() => setTab('actions')}>
+          <ListChecks size={16} /> Actions
+          {(meeting.action_items?.length ?? 0) > 0 && <span className="tab-badge">{meeting.action_items!.length}</span>}
         </button>
         <button className={`tab ${tab === 'chat' ? 'active' : ''}`} onClick={() => setTab('chat')}>
           <MessageSquare size={16} /> Ask AI
@@ -179,6 +225,17 @@ export function NotesView({
             modelName={modelName}
           />
         </div>
+      ) : tab === 'actions' ? (
+        <ActionItems
+          meetingId={meeting.id}
+          meetingTitle={meeting.title}
+          items={meeting.action_items ?? []}
+          provider={provider}
+          apiKey={apiKey}
+          baseUrl={baseUrl}
+          modelName={modelName}
+          onChange={onSummaryGenerated}
+        />
       ) : (
         <>
           {!meeting.summary || isRegeneratingSummary ? (
@@ -238,9 +295,21 @@ export function NotesView({
             <div className="card-header-row">
               <h2 className="card-title">Transcript</h2>
               {!isEditingTranscript ? (
-                <button className="btn btn-outline btn-sm" onClick={() => setIsEditingTranscript(true)}>
-                  Edit Transcript
-                </button>
+                <div className="card-header-actions">
+                  {isTimestamped(meeting.transcript) && (
+                    <>
+                      <button className="btn btn-outline btn-sm" onClick={() => exportSubtitles('srt')}>
+                        <Captions size={15} /> SRT
+                      </button>
+                      <button className="btn btn-outline btn-sm" onClick={() => exportSubtitles('vtt')}>
+                        <Captions size={15} /> VTT
+                      </button>
+                    </>
+                  )}
+                  <button className="btn btn-outline btn-sm" onClick={() => setIsEditingTranscript(true)}>
+                    Edit
+                  </button>
+                </div>
               ) : (
                 <div style={{ display: 'flex', gap: '0.5rem' }}>
                   <button
@@ -263,7 +332,12 @@ export function NotesView({
                 onChange={e => setEditedTranscript(e.target.value)}
               />
             ) : (
-              <div className="result-box transcript-view">{meeting.transcript}</div>
+              <TranscriptPlayer
+                meetingId={meeting.id}
+                transcript={meeting.transcript}
+                hasAudio={!!meeting.has_audio}
+                onRenameSpeaker={handleRenameSpeaker}
+              />
             )}
           </div>
         </>

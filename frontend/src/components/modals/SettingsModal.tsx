@@ -11,6 +11,8 @@ type Props = {
   setBaseUrl: (v: string) => void;
   modelName: string;
   setModelName: (v: string) => void;
+  embedModel: string;
+  setEmbedModel: (v: string) => void;
   systemInfo: SystemInfo;
   onRefreshSystem: () => void;
 };
@@ -36,6 +38,8 @@ export function SettingsModal({
   setBaseUrl,
   modelName,
   setModelName,
+  embedModel,
+  setEmbedModel,
   systemInfo,
   onRefreshSystem,
 }: Props) {
@@ -141,6 +145,23 @@ export function SettingsModal({
               ))}
             </div>
           )}
+        </div>
+
+        <div className="form-group">
+          <label>Embedding Model <span className="label-hint">(for "Ask Library" search)</span></label>
+          <input
+            type="text"
+            placeholder={provider === 'openai' ? 'text-embedding-3-small' : 'nomic-embed-text'}
+            value={embedModel}
+            onChange={e => setEmbedModel(e.target.value)}
+          />
+          <div className="device-note" style={{ marginTop: '0.4rem' }}>
+            {provider === 'claude'
+              ? 'Claude has no embeddings API — library search falls back to local Ollama (nomic-embed-text).'
+              : provider === 'openai'
+              ? 'Leave blank to use text-embedding-3-small.'
+              : 'Leave blank to use nomic-embed-text. Run: ollama pull nomic-embed-text'}
+          </div>
         </div>
 
         <button className="btn" onClick={onClose} style={{ width: '100%', marginTop: '1rem' }}>
